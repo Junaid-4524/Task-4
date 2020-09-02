@@ -1,0 +1,328 @@
+# Task-4
+
+provider "aws"{
+    region = "ap-south-1"
+    profile ="junaid"
+}
+
+
+resource "aws_vpc" "vpc" {
+  cidr_block       = "192.168.0.0/16"
+  enable_dns_hostnames = "true"
+  instance_tenancy = "default"
+  tags = {
+    Name = "task4_vpc"
+  }
+
+}
+
+resource "aws_subnet" "pub_sub_1a" {
+  depends_on = [
+    aws_vpc.vpc,
+  ]
+  vpc_id     = "${aws_vpc.vpc.id}"
+  availability_zone_id = "aps1-az1"
+  map_public_ip_on_launch = "true"
+  cidr_block = "192.168.1.0/24"
+
+
+  tags = {
+    Name = "pub_sub_1a"
+  }
+}
+
+
+resource "aws_subnet" "pri_sub_1b" {
+  depends_on = [
+    aws_subnet.pub_sub_1a,
+  ]
+  vpc_id     = "${aws_vpc.vpc.id}"
+  availability_zone_id = "aps1-az3"
+  cidr_block = "192.168.2.0/24"
+
+
+  tags = {
+    Name = "pri_sub_1b"
+  }
+
+}
+
+resource "aws_internet_gateway" "ig_for_vpc" {
+  depends_on = [
+    aws_subnet.pri_sub_1b,
+  ]
+  vpc_id = "${aws_vpc.vpc.id}"
+
+
+  tags = {
+    Name = "ig_for_vpc"
+  }
+
+}
+
+
+resource "aws_route_table" "route_pub" {
+  depends_on = [
+    aws_internet_gateway.ig_for_vpc,
+  ]
+  vpc_id = "${aws_vpc.vpc.id}"
+
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = "${aws_internet_gateway.ig_for_vpc.id}"
+  }
+
+
+  tags = {
+    Name = "route_pub"
+  }
+}
+
+
+resource "aws_route_table_association" "route_asso_pub_sub" {
+  depends_on = [
+    aws_route_table.route_pub,
+  ]
+  
+  subnet_id      = aws_subnet.pub_sub_1a.id
+  route_table_id = aws_route_table.route_pub.id
+
+}
+
+
+resource "aws_eip" "eip_for_nat" {
+  depends_on = [
+    aws_route_table_association.route_asso_pub_sub,
+  ]
+  vpc      = true
+}
+
+
+resource "aws_nat_gateway" "nat_pri" {
+depends_on = [
+    aws_eip.eip_for_nat,
+  ]
+
+
+  allocation_id = "${aws_eip.eip_for_nat.id}"
+  subnet_id     = "${aws_subnet.pub_sub_1a.id}"
+
+
+  tags = {
+    Name = "nat_pri"
+  }
+}
+
+
+resource "aws_route_table" "nat_pri_route" {
+  depends_on = [
+    aws_nat_gateway.nat_pri,
+  ]
+  vpc_id = "${aws_vpc.vpc.id}"
+
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    nat_gateway_id = "${aws_nat_gateway.nat_pri.id}"
+  }
+
+
+  tags = {
+    Name = "nat_pri_route"
+  }
+}
+
+
+resource "aws_route_table_association" "route_asso_nat_pri" {
+  depends_on = [
+    aws_route_table.nat_pri_route,
+  ]
+  
+  subnet_id      = aws_subnet.pri_sub_1b.id
+  route_table_id = aws_route_table.nat_pri_route.id
+
+}
+
+
+#sg for wordpress
+resource "aws_security_group" "wp_sg" {
+   depends_on = [
+    aws_route_table_association.route_asso_nat_pri,
+  ]
+  name        = "wp_sg"
+  description = "Allow http and ssh inbound traffic"
+  vpc_id      = "${aws_vpc.vpc.id}"
+
+
+  ingress {
+    description = "ssh from VPC"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+
+  ingress {
+    description = "http from VPC"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+
+  tags = {
+    Name = "wp_sg"
+  }
+
+}
+
+#sg for bation host
+
+resource "aws_security_group" "bh_sg" {
+   
+depends_on = [
+    aws_instance.wordpress,
+  ]
+  name        = "bh_sg"
+  description = "Allow http and ssh inbound traffic"
+  vpc_id      = "${aws_vpc.vpc.id}"
+
+
+  ingress {
+    description = "ssh from VPC"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+
+  tags = {
+    Name = "bh_sg"
+  }
+}
+
+#sg for sql instance
+
+resource "aws_security_group" "sql_sg" {
+  depends_on = [
+    aws_instance.bation_host,
+  ]
+  name        = "sql_sg"
+  description = "Allow sql inbound traffic"
+  vpc_id      = "${aws_vpc.vpc.id}"
+
+
+  ingress {
+    description = "sql from VPC"
+    from_port   = 0
+    to_port     = 3306
+    protocol    = "tcp"
+    security_groups = [ aws_security_group.wp_sg.id ]
+  }
+  ingress {
+    description = "ssh from VPC for mysql"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    security_groups = [ aws_security_group.bh_sg.id ]
+  }
+
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+
+  tags = {
+    Name = "sql_sg"
+  }
+}
+
+
+
+#launching wordpress instance 
+resource "aws_instance" "wordpress" {
+  depends_on = [
+    aws_security_group.wp_sg,
+  ]
+  ami           = "ami-0732b62d310b80e97"
+  instance_type = "t2.micro"
+  vpc_security_group_ids=[ aws_security_group.wp_sg.id ]
+  subnet_id = "${aws_subnet.pub_sub_1a.id}"
+  key_name = "hy-key123"
+  connection {
+    type     = "ssh"
+    user     = "ec2-user"
+    private_key = file("C:/Users/Junaid/Downloads/hy-key123.pem")
+    host     = aws_instance.wordpress.public_ip
+  }
+  provisioner "remote-exec" {
+    inline = [
+      "sudo yum install docker -y",
+      "sudo service docker start",
+      "sudo docker pull wordpress",
+      "sudo docker run -dit -p 80:80 wordpress"
+    ]
+  }
+  tags = {
+    Name = "wordpress"
+  }
+
+}
+
+#instance for baishon host
+
+resource "aws_instance" "bation_host" {
+  depends_on = [
+    aws_security_group.bh_sg,
+  ]
+  ami           = "ami-0732b62d310b80e97"
+  instance_type = "t2.micro"
+  vpc_security_group_ids=[ aws_security_group.bh_sg.id ]
+  subnet_id = "${aws_subnet.pub_sub_1a.id}"
+  key_name = "hy-key123"
+  tags = {
+    Name = "bation_host"
+  }
+}
+
+#instance for database
+
+resource "aws_instance" "sql" {
+  depends_on = [
+    aws_security_group.sql_sg,
+  ]
+  ami           = "ami-0732b62d310b80e97"
+  instance_type = "t2.micro"
+  vpc_security_group_ids=[ aws_security_group.sql_sg.id ]
+  subnet_id = "${aws_subnet.pri_sub_1b.id}"
+  key_name = "hy-key123"
+  tags = {
+    Name = "sql"
+  }
+}
+
+
